@@ -1,19 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { QrCode, Search, Plus, User, Upload, X, CheckCircle, AlertCircle, Download, Share2 } from 'lucide-react';
+import { QrCode, Search, Plus, User, Upload, X, CheckCircle, AlertCircle, Download, Share2, LogOut, LogIn } from 'lucide-react';
 
-// Generate a unique 6-character alias
-const generateAlias = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let result = '';
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-};
+// Supabase configuration
+const SUPABASE_URL = 'https://vqxsuqsjndlkvjpflhfy.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxeHN1cXNqbmRsa3ZqcGZsaGZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEyMDE0MTQsImV4cCI6MjA2Njc3NzQxNH0.9rESgHXc7L1PHXXTWpNaAMdSsVP5RchKENHjFVIGsz8';
 
 // Generate QR code data URL (simplified - in real app you'd use a proper QR library)
 const generateQRCode = (alias) => {
-  // This is a placeholder - in a real app, use a QR code library like qrcode.js
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   canvas.width = 200;
@@ -46,28 +39,149 @@ const generateQRCode = (alias) => {
   return canvas.toDataURL();
 };
 
-const CarConnectApp = () => {
-  const [profiles, setProfiles] = useState([
-    {
-      id: 'DEMO01',
-      alias: 'DEMO01',
-      first_name: 'Alex',
-      car_description: 'Red Honda Civic',
-      story: 'This is my first car! Got it for my 18th birthday and have been on so many adventures with it.',
-      created_at: new Date().toISOString(),
-      qr_code: null
-    },
-    {
-      id: 'TESLA2',
-      alias: 'TESLA2',
-      first_name: 'Jordan',
-      car_description: 'Blue Tesla Model 3',
-      story: 'Switched to electric and loving every mile. This car represents my commitment to sustainability!',
-      created_at: new Date().toISOString(),
-      qr_code: null
+// Simple Supabase client with auth
+class SupabaseClient {
+  constructor(url, key) {
+    this.url = url;
+    this.key = key;
+    this.currentUser = null;
+    this.authToken = null;
+  }
+
+  async signUp(email, password, alias, firstName, carDescription, story) {
+    const response = await fetch(`${this.url}/auth/v1/signup`, {
+      method: 'POST',
+      headers: {
+        'apikey': this.key,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        data: {
+          alias,
+          first_name: firstName,
+          car_description: carDescription,
+          story
+        }
+      })
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.msg || data.error_description || 'Registration failed');
     }
-  ]);
-  
+
+    // If registration successful, create user profile
+    if (data.user) {
+      this.currentUser = data.user;
+      this.authToken = data.session?.access_token;
+      
+      // Create user profile
+      await this.createUserProfile(data.user.id, alias, firstName, carDescription, story);
+    }
+
+    return data;
+  }
+
+  async signIn(email, password) {
+    const response = await fetch(`${this.url}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'apikey': this.key,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password
+      })
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error_description || 'Login failed');
+    }
+
+    this.currentUser = data.user;
+    this.authToken = data.access_token;
+    
+    return data;
+  }
+
+  async signOut() {
+    if (this.authToken) {
+      await fetch(`${this.url}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          'apikey': this.key,
+          'Authorization': `Bearer ${this.authToken}`
+        }
+      });
+    }
+    
+    this.currentUser = null;
+    this.authToken = null;
+  }
+
+  async createUserProfile(userId, alias, firstName, carDescription, story) {
+    const profileData = {
+      id: userId,
+      alias,
+      first_name: firstName,
+      car_description: carDescription,
+      story: story || 'No story yet - but every car has one!',
+      qr_code: generateQRCode(alias)
+    };
+
+    return this.query('user_profiles', 'POST', profileData);
+  }
+
+  async query(table, method = 'GET', data = null) {
+    const url = `${this.url}/rest/v1/${table}`;
+    const headers = {
+      'apikey': this.key,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    };
+
+    if (this.authToken) {
+      headers['Authorization'] = `Bearer ${this.authToken}`;
+    }
+
+    const options = {
+      method,
+      headers
+    };
+
+    if (data && method !== 'GET') {
+      options.body = JSON.stringify(data);
+    }
+
+    const response = await fetch(url, options);
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'Database error');
+    }
+
+    return method === 'DELETE' ? null : await response.json();
+  }
+
+  async select(table, columns = '*') {
+    return this.query(`${table}?select=${columns}`);
+  }
+
+  async insert(table, data) {
+    return this.query(table, 'POST', data);
+  }
+}
+
+const supabase = new SupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const CarConnectApp = () => {
+  const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [notification, setNotification] = useState(null);
   const [currentView, setCurrentView] = useState('search');
@@ -76,12 +190,22 @@ const CarConnectApp = () => {
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showQRCode, setShowQRCode] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
   
   const [newProfile, setNewProfile] = useState({
+    email: '',
+    password: '',
     alias: '',
     firstName: '',
     carDescription: '',
     story: ''
+  });
+
+  const [loginForm, setLoginForm] = useState({
+    email: '',
+    password: ''
   });
 
   // Show notification
@@ -89,6 +213,25 @@ const CarConnectApp = () => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
   };
+
+  // Load profiles from database
+  const loadProfiles = async () => {
+    try {
+      setLoading(true);
+      const data = await supabase.select('user_profiles');
+      setProfiles(data || []);
+    } catch (error) {
+      console.error('Error loading profiles:', error);
+      showNotification('Failed to load profiles', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load profiles on component mount
+  useEffect(() => {
+    loadProfiles();
+  }, []);
 
   const fileInputRef = useRef(null);
 
@@ -106,55 +249,101 @@ const CarConnectApp = () => {
     setSearchResults(results);
   };
 
-  const handleAddProfile = async () => {
-    if (!newProfile.firstName.trim() || !newProfile.carDescription.trim()) {
-      showNotification('Please fill in your name and car description', 'error');
+  const handleRegister = async () => {
+    if (!newProfile.email.trim() || !newProfile.password.trim() || !newProfile.alias.trim() || !newProfile.firstName.trim() || !newProfile.carDescription.trim()) {
+      showNotification('Please fill in all required fields', 'error');
+      return;
+    }
+
+    if (newProfile.password.length < 6) {
+      showNotification('Password must be at least 6 characters long', 'error');
+      return;
+    }
+
+    // Validate alias format
+    if (!/^[A-Z0-9]{1,10}$/.test(newProfile.alias)) {
+      showNotification('Alias must be 1-10 characters, letters and numbers only', 'error');
       return;
     }
     
     setSaving(true);
     
     try {
-      // Generate unique alias if not provided
-      let alias = newProfile.alias.trim().toUpperCase();
-      if (!alias) {
-        do {
-          alias = generateAlias();
-        } while (profiles.some(p => p.alias === alias));
-      } else {
-        // Check if custom alias already exists
-        if (profiles.some(p => p.alias === alias)) {
-          showNotification('This alias is already taken. Try another one!', 'error');
-          setSaving(false);
-          return;
-        }
-      }
+      const result = await supabase.signUp(
+        newProfile.email,
+        newProfile.password,
+        newProfile.alias,
+        newProfile.firstName,
+        newProfile.carDescription,
+        newProfile.story
+      );
       
-      const profileData = {
-        id: alias,
-        alias: alias,
+      setCurrentUser(result.user);
+      
+      // Reload profiles to get the new one
+      await loadProfiles();
+      
+      // Reset form
+      setNewProfile({ email: '', password: '', alias: '', firstName: '', carDescription: '', story: '' });
+      setShowAuth(false);
+      setCurrentView('search');
+      
+      showNotification(`Welcome ${newProfile.firstName}! Your alias is: ${newProfile.alias}`, 'success');
+      
+      // Show the QR code for the new user
+      const newUserProfile = {
+        alias: newProfile.alias,
         first_name: newProfile.firstName,
         car_description: newProfile.carDescription,
         story: newProfile.story || 'No story yet - but every car has one!',
-        created_at: new Date().toISOString(),
-        qr_code: generateQRCode(alias)
+        qr_code: generateQRCode(newProfile.alias)
       };
-      
-      // Add to profiles (in real app, this would be saved to database)
-      setProfiles(prev => [profileData, ...prev]);
-      
-      // Reset form
-      setNewProfile({ alias: '', firstName: '', carDescription: '', story: '' });
-      showNotification(`Car profile created! Your alias is: ${alias}`, 'success');
-      
-      // Show the QR code
-      setShowQRCode(profileData);
+      setShowQRCode(newUserProfile);
       
     } catch (error) {
-      console.error('Error saving profile:', error);
-      showNotification('Failed to create profile.', 'error');
+      console.error('Error registering:', error);
+      if (error.message.includes('already been registered')) {
+        showNotification('This email is already registered. Try logging in instead.', 'error');
+      } else if (error.message.includes('alias')) {
+        showNotification('This alias is already taken. Please choose another one.', 'error');
+      } else {
+        showNotification(error.message || 'Registration failed.', 'error');
+      }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!loginForm.email.trim() || !loginForm.password.trim()) {
+      showNotification('Please enter both email and password', 'error');
+      return;
+    }
+    
+    setSaving(true);
+    
+    try {
+      const result = await supabase.signIn(loginForm.email, loginForm.password);
+      setCurrentUser(result.user);
+      setLoginForm({ email: '', password: '' });
+      setShowAuth(false);
+      showNotification('Welcome back!', 'success');
+      
+    } catch (error) {
+      console.error('Error logging in:', error);
+      showNotification(error.message || 'Login failed.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.signOut();
+      setCurrentUser(null);
+      showNotification('Logged out successfully', 'success');
+    } catch (error) {
+      console.error('Error logging out:', error);
     }
   };
 
@@ -290,6 +479,153 @@ const CarConnectApp = () => {
     </div>
   );
 
+  const AuthModal = () => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg max-w-md w-full p-6">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold">
+            {authMode === 'login' ? 'Login' : 'Create Account'}
+          </h2>
+          <button onClick={() => setShowAuth(false)} className="text-gray-500 hover:text-gray-700">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+        
+        <div className="flex mb-4">
+          <button
+            onClick={() => setAuthMode('login')}
+            className={`flex-1 py-2 px-4 rounded-l-lg ${authMode === 'login' ? 'bg-green-500 text-white' : 'bg-gray-200'}`}
+          >
+            Login
+          </button>
+          <button
+            onClick={() => setAuthMode('register')}
+            className={`flex-1 py-2 px-4 rounded-r-lg ${authMode === 'register' ? 'bg-green-500 text-white' : 'bg-gray-200'}`}
+          >
+            Register
+          </button>
+        </div>
+
+        {authMode === 'login' ? (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+              <input
+                type="email"
+                value={loginForm.email}
+                onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="your@email.com"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="Your password"
+              />
+            </div>
+            <button
+              onClick={handleLogin}
+              disabled={saving}
+              className="w-full py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
+              {saving ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Logging in...
+                </>
+              ) : (
+                'Login'
+              )}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email *</label>
+              <input
+                type="email"
+                value={newProfile.email}
+                onChange={(e) => setNewProfile({...newProfile, email: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="your@email.com"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password *</label>
+              <input
+                type="password"
+                value={newProfile.password}
+                onChange={(e) => setNewProfile({...newProfile, password: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="Min 6 characters"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Alias (Username) *</label>
+              <input
+                type="text"
+                value={newProfile.alias}
+                onChange={(e) => setNewProfile({...newProfile, alias: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="e.g., MYCAR, TESLA3, HONDA22"
+              />
+              <p className="text-xs text-gray-500 mt-1">Letters and numbers only, max 10 characters</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Your Name *</label>
+              <input
+                type="text"
+                value={newProfile.firstName}
+                onChange={(e) => setNewProfile({...newProfile, firstName: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="Your first name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Car Description *</label>
+              <input
+                type="text"
+                value={newProfile.carDescription}
+                onChange={(e) => setNewProfile({...newProfile, carDescription: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="e.g., Blue 2020 Honda Civic, Red Tesla Model 3"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Your Car Story</label>
+              <textarea
+                value={newProfile.story}
+                onChange={(e) => setNewProfile({...newProfile, story: e.target.value})}
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                placeholder="Share the story behind your car!"
+              />
+            </div>
+            <button
+              onClick={handleRegister}
+              disabled={saving}
+              className="w-full py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
+              {saving ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Creating Account...
+                </>
+              ) : (
+                'Create Account'
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100">
       {/* Notification */}
@@ -308,8 +644,34 @@ const CarConnectApp = () => {
 
       <div className="container mx-auto px-4 py-8">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">CarConnect</h1>
-          <p className="text-gray-600">Share your car story through QR codes</p>
+          <div className="flex items-center justify-between max-w-4xl mx-auto">
+            <div className="flex-1">
+              <h1 className="text-4xl font-bold text-gray-800 mb-2">CarConnect</h1>
+              <p className="text-gray-600">Share your car story through QR codes</p>
+            </div>
+            <div className="flex items-center space-x-4">
+              {currentUser ? (
+                <>
+                  <span className="text-sm text-gray-600">Welcome back!</span>
+                  <button
+                    onClick={handleLogout}
+                    className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center"
+                  >
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Logout
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowAuth(true)}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center"
+                >
+                  <LogIn className="w-4 h-4 mr-2" />
+                  Login / Register
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {loading ? (
@@ -322,219 +684,3 @@ const CarConnectApp = () => {
             {/* Navigation */}
             <div className="flex justify-center mb-8">
               <div className="bg-white rounded-lg shadow-md p-1 flex">
-                <button
-                  onClick={() => setCurrentView('search')}
-                  className={`px-6 py-2 rounded-md font-medium transition-colors ${
-                    currentView === 'search' 
-                    ? 'bg-green-500 text-white' 
-                    : 'text-gray-600 hover:text-green-500'
-                  }`}
-                >
-                  <Search className="w-4 h-4 inline mr-2" />
-                  Discover
-                </button>
-                <button
-                  onClick={() => setCurrentView('add')}
-                  className={`px-6 py-2 rounded-md font-medium transition-colors ${
-                    currentView === 'add' 
-                    ? 'bg-green-500 text-white' 
-                    : 'text-gray-600 hover:text-green-500'
-                  }`}
-                >
-                  <Plus className="w-4 h-4 inline mr-2" />
-                  Create Profile
-                </button>
-              </div>
-            </div>
-
-            {/* Search View */}
-            {currentView === 'search' && (
-              <div className="max-w-2xl mx-auto">
-                <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-                  <h2 className="text-xl font-semibold mb-4">Discover Car Stories</h2>
-                  
-                  <div className="flex gap-2 mb-4">
-                    <input
-                      type="text"
-                      placeholder="Enter car alias (e.g., TESLA2, DEMO01)..."
-                      value={searchQuery}
-                      onChange={(e) => {
-                        setSearchQuery(e.target.value);
-                        handleSearch(e.target.value);
-                      }}
-                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    />
-                    <button
-                      onClick={() => handleSearch(searchQuery)}
-                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                    >
-                      <Search className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center justify-center"
-                    >
-                      <QrCode className="w-4 h-4 mr-2" />
-                      Scan QR Code
-                    </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      className="hidden"
-                    />
-                  </div>
-                </div>
-
-                {/* Search Results */}
-                {searchResults.length > 0 && (
-                  <div className="space-y-4">
-                    <h3 className="text-lg font-semibold text-gray-800">Search Results</h3>
-                    {searchResults.map(profile => (
-                      <ProfileCard
-                        key={profile.id}
-                        profile={profile}
-                        onClick={setSelectedProfile}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {searchQuery && searchResults.length === 0 && (
-                  <div className="text-center py-8 text-gray-500">
-                    <Search className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                    <p>No car profiles found matching "{searchQuery}"</p>
-                  </div>
-                )}
-
-                {/* All Profiles */}
-                {!searchQuery && (
-                  <div className="space-y-4">
-                    <h3 className="text-lg font-semibold text-gray-800">
-                      Car Community ({profiles.length})
-                    </h3>
-                    {profiles.length === 0 ? (
-                      <div className="text-center py-8 text-gray-500">
-                        <User className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                        <p>No car profiles yet. Be the first to share your story!</p>
-                      </div>
-                    ) : (
-                      profiles.map(profile => (
-                        <ProfileCard
-                          key={profile.id}
-                          profile={profile}
-                          onClick={setSelectedProfile}
-                        />
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Add Profile View */}
-            {currentView === 'add' && (
-              <div className="max-w-md mx-auto">
-                <div className="bg-white rounded-lg shadow-md p-6">
-                  <h2 className="text-xl font-semibold mb-4">Create Your Car Profile</h2>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Custom Alias (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={newProfile.alias}
-                        onChange={(e) => setNewProfile({...newProfile, alias: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                        placeholder="e.g., MYCAR, TESLA3, HONDA22 (leave blank for auto-generated)"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Letters and numbers only, max 10 characters</p>
-                    </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Your Name *
-                      </label>
-                      <input
-                        type="text"
-                        value={newProfile.firstName}
-                        onChange={(e) => setNewProfile({...newProfile, firstName: e.target.value})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                        placeholder="Your first name"
-                      />
-                    </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Car Description *
-                      </label>
-                      <input
-                        type="text"
-                        value={newProfile.carDescription}
-                        onChange={(e) => setNewProfile({...newProfile, carDescription: e.target.value})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                        placeholder="e.g., Blue 2020 Honda Civic, Red Tesla Model 3"
-                      />
-                    </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Your Car Story
-                      </label>
-                      <textarea
-                        value={newProfile.story}
-                        onChange={(e) => setNewProfile({...newProfile, story: e.target.value})}
-                        rows={4}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                        placeholder="Share the story behind your car! First car? Dream car? Adventure companion?"
-                      />
-                    </div>
-                    
-                    <button
-                      onClick={handleAddProfile}
-                      disabled={saving}
-                      className="w-full py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                    >
-                      {saving ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                          Creating...
-                        </>
-                      ) : (
-                        'Create My Car Profile'
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Profile Modal */}
-            {selectedProfile && (
-              <ProfileModal
-                profile={selectedProfile}
-                onClose={() => setSelectedProfile(null)}
-              />
-            )}
-
-            {/* QR Code Modal */}
-            {showQRCode && (
-              <QRCodeModal
-                profile={showQRCode}
-                onClose={() => setShowQRCode(null)}
-              />
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default CarConnectApp;
